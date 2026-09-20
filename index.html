@@ -39,14 +39,6 @@
       font-weight: bold;
     }
 
-    .menu-btn {
-      background: none;
-      border: none;
-      color: white;
-      font-size: 1.4rem;
-      cursor: pointer;
-    }
-
     /* ナビゲーションメニュー */
     nav {
       background-color: #34495e;
@@ -71,7 +63,7 @@
       color: white;
     }
 
-    /* メインコンテンツ表示エリア */
+    /* メインエリア */
     main {
       flex: 1;
       padding: 16px;
@@ -88,7 +80,7 @@
       display: block;
     }
 
-    /* 単語カード（勉強用・復習用） */
+    /* カード（勉強・復習） */
     .card-list {
       display: flex;
       flex-direction: column;
@@ -129,7 +121,7 @@
       display: block;
     }
 
-    /* テスト設定・実行画面 */
+    /* パネル */
     .panel {
       background: white;
       border-radius: 12px;
@@ -160,13 +152,12 @@
     .btn-primary { background-color: #3498db; color: white; }
     .btn-success { background-color: #2ecc71; color: white; }
     .btn-warning { background-color: #e67e22; color: white; }
-    .btn-danger { background-color: #e74c3c; color: white; }
 
     .option-group {
       margin-bottom: 16px;
     }
 
-    .option-group label {
+    .option-group label.title {
       display: block;
       margin-bottom: 6px;
       font-weight: bold;
@@ -175,15 +166,17 @@
 
     .radio-group, .checkbox-group {
       display: flex;
-      gap: 15px;
+      gap: 12px;
+      flex-wrap: wrap;
     }
 
     .radio-group label, .checkbox-group label {
       font-weight: normal;
       cursor: pointer;
+      font-size: 0.95rem;
     }
 
-    /* テスト実行エリア */
+    /* テスト画面 */
     .test-header {
       display: flex;
       justify-content: space-between;
@@ -221,6 +214,51 @@
       min-height: 20px;
     }
 
+    /* 4択ボタンエリア */
+    .choice-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    @media (max-width: 480px) {
+      .choice-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .choice-btn {
+      background: white;
+      border: 2px solid #3498db;
+      color: #2c3e50;
+      padding: 14px 10px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+      word-break: break-word;
+    }
+
+    .choice-btn:active {
+      transform: scale(0.98);
+    }
+
+    .choice-btn.correct-choice {
+      background-color: #2ecc71 !important;
+      border-color: #2ecc71 !important;
+      color: white !important;
+    }
+
+    .choice-btn.wrong-choice {
+      background-color: #e74c3c !important;
+      border-color: #e74c3c !important;
+      color: white !important;
+    }
+
+    /* テキスト入力エリア */
     .input-area {
       display: flex;
       gap: 8px;
@@ -296,7 +334,15 @@
         <h2 id="setup-title">テスト設定</h2>
 
         <div class="option-group">
-          <label>問題数:</label>
+          <label class="title">回答方式:</label>
+          <div class="radio-group">
+            <label><input type="radio" name="ans-style" value="choice" checked> 選択式（4択）</label>
+            <label><input type="radio" name="ans-style" value="input"> 直接入力（タイピング）</label>
+          </div>
+        </div>
+
+        <div class="option-group">
+          <label class="title">問題数:</label>
           <div class="radio-group">
             <label><input type="radio" name="q-count" value="10" checked> 10問</label>
             <label><input type="radio" name="q-count" value="15"> 15問</label>
@@ -305,7 +351,7 @@
         </div>
 
         <div class="option-group" id="trans-option-group">
-          <label>日本語訳の表示:</label>
+          <label class="title">日本語訳の表示:</label>
           <div class="checkbox-group">
             <label><input type="checkbox" id="show-trans-check" checked> 問題に日本語訳を表示する</label>
           </div>
@@ -328,9 +374,13 @@
         <div id="question-sub" class="question-sub">---</div>
       </div>
 
-      <div class="input-area">
+      <!-- 4択エリア -->
+      <div id="choice-area" class="choice-grid"></div>
+
+      <!-- 入力エリア -->
+      <div id="input-area" class="input-area" style="display:none;">
         <input type="text" id="answer-input" placeholder="回答を入力" autocomplete="off">
-        <button id="submit-btn" class="btn btn-primary" style="width: auto; margin:0;" onclick="checkAnswer()">回答</button>
+        <button id="submit-btn" class="btn btn-primary" style="width: auto; margin:0;" onclick="checkTextAnswer()">回答</button>
       </div>
 
       <div id="result-msg" class="result-msg"></div>
@@ -622,43 +672,38 @@
 
     // アプリ状態
     let wrongWordIds = new Set();
-    let currentTestType = 'qa';
+    let currentTestType = 'qa'; // 'qa' or 'fill'
+    let currentAnsStyle = 'choice'; // 'choice' or 'input'
     let currentQuestions = [];
     let currentQuestionIndex = 0;
     let currentCorrectAnswer = '';
     let currentQaMode = 'en_to_ja';
 
-    // 初期化
     window.onload = () => {
       renderStudyCards();
       renderReviewCards();
 
-      // Enterキーで回答送信
       document.getElementById('answer-input').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') checkAnswer();
+        if (e.key === 'Enter') checkTextAnswer();
       });
     };
 
-    // ページ切り替え
     function showPage(pageId) {
       document.querySelectorAll('.page').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('nav button').forEach(el => el.classList.remove('active'));
 
       document.getElementById(`page-${pageId}`).classList.add('active');
-      
       const navBtn = document.getElementById(`nav-${pageId.split('-')[0]}`);
       if (navBtn) navBtn.classList.add('active');
 
       if (pageId === 'review') renderReviewCards();
     }
 
-    // 単語カード表示（勉強用）
     function renderStudyCards() {
       const container = document.getElementById('study-list');
       container.innerHTML = VOCAB_DATA.map(item => createCardHtml(item)).join('');
     }
 
-    // 単語カード表示（復習用）
     function renderReviewCards() {
       const container = document.getElementById('review-list');
       const wrongList = VOCAB_DATA.filter(item => wrongWordIds.has(item.id));
@@ -679,7 +724,6 @@
       `;
     }
 
-    // テスト設定画面へ
     function setupTest(type) {
       currentTestType = type;
       document.getElementById('setup-title').innerText = type === 'qa' ? '一問一答テスト設定' : '英文穴埋めテスト設定';
@@ -687,12 +731,13 @@
       showPage('test-setup');
     }
 
-    // テスト開始
     function startTest() {
       const countInput = document.querySelector('input[name="q-count"]:checked');
       const count = parseInt(countInput.value, 10);
+      
+      const styleInput = document.querySelector('input[name="ans-style"]:checked');
+      currentAnsStyle = styleInput.value;
 
-      // 配列シャッフル
       const shuffled = [...VOCAB_DATA].sort(() => 0.5 - Math.random());
       currentQuestions = shuffled.slice(0, Math.min(count, shuffled.length));
 
@@ -701,7 +746,6 @@
       loadQuestion();
     }
 
-    // 問題の読み込み
     function loadQuestion() {
       const item = currentQuestions[currentQuestionIndex];
       const total = currentQuestions.length;
@@ -711,26 +755,41 @@
       const card = document.getElementById('question-card');
       card.className = 'question-card';
 
-      const input = document.getElementById('answer-input');
-      input.value = '';
-      input.disabled = false;
-      input.focus();
-
-      document.getElementById('submit-btn').disabled = false;
       document.getElementById('result-msg').innerText = '';
       document.getElementById('result-msg').className = 'result-msg';
       document.getElementById('next-btn').style.display = 'none';
 
+      // 回答欄切り替え
+      const choiceArea = document.getElementById('choice-area');
+      const inputArea = document.getElementById('input-area');
+
+      if (currentAnsStyle === 'choice') {
+        choiceArea.style.display = 'grid';
+        inputArea.style.display = 'none';
+      } else {
+        choiceArea.style.display = 'none';
+        inputArea.style.display = 'flex';
+        const input = document.getElementById('answer-input');
+        input.value = '';
+        input.disabled = false;
+        input.focus();
+        document.getElementById('submit-btn').disabled = false;
+      }
+
+      // 問題生成
+      let optionsKey = 'word';
       if (currentTestType === 'qa') {
         currentQaMode = Math.random() < 0.5 ? 'en_to_ja' : 'ja_to_en';
         if (currentQaMode === 'en_to_ja') {
           document.getElementById('question-main').innerText = item.word;
-          document.getElementById('question-sub').innerText = '日本語の意味を入力してください';
+          document.getElementById('question-sub').innerText = '日本語の意味を選んでください';
           currentCorrectAnswer = item.meaning;
+          optionsKey = 'meaning';
         } else {
           document.getElementById('question-main').innerText = item.meaning;
-          document.getElementById('question-sub').innerText = '英単語を入力してください';
+          document.getElementById('question-sub').innerText = '英単語を選んでください';
           currentCorrectAnswer = item.word;
+          optionsKey = 'word';
         }
       } else {
         const sent = item.sentences[Math.floor(Math.random() * item.sentences.length)];
@@ -739,11 +798,71 @@
         document.getElementById('question-main').innerText = sent.en;
         document.getElementById('question-sub').innerText = showTrans ? sent.ja : '';
         currentCorrectAnswer = item.word;
+        optionsKey = 'word';
+      }
+
+      // 4択ボタン作成
+      if (currentAnsStyle === 'choice') {
+        createChoices(item, optionsKey);
       }
     }
 
-    // 回答判定
-    function checkAnswer() {
+    // 4択作成
+    function createChoices(currentItem, optionsKey) {
+      const choiceArea = document.getElementById('choice-area');
+      choiceArea.innerHTML = '';
+
+      // 正解以外のダミーを3つ選ぶ
+      const dummyCandidates = VOCAB_DATA.filter(v => v.id !== currentItem.id);
+      const shuffledDummies = dummyCandidates.sort(() => 0.5 - Math.random()).slice(0, 3);
+      
+      const options = [currentItem[optionsKey], ...shuffledDummies.map(d => d[optionsKey])];
+      const shuffledOptions = options.sort(() => 0.5 - Math.random());
+
+      shuffledOptions.forEach(optText => {
+        const btn = document.createElement('button');
+        btn.className = 'choice-btn';
+        btn.innerText = optText;
+        btn.onclick = () => checkChoiceAnswer(optText, btn);
+        choiceArea.appendChild(btn);
+      });
+    }
+
+    // 選択式の回答判定
+    function checkChoiceAnswer(selectedVal, clickedBtn) {
+      const item = currentQuestions[currentQuestionIndex];
+      const buttons = document.querySelectorAll('.choice-btn');
+      buttons.forEach(b => b.disabled = true); // 連打防止
+
+      const card = document.getElementById('question-card');
+      const msg = document.getElementById('result-msg');
+
+      if (selectedVal === currentCorrectAnswer) {
+        card.classList.add('correct');
+        clickedBtn.classList.add('correct-choice');
+        msg.innerText = '⭕ 正解！';
+        msg.classList.add('correct');
+      } else {
+        card.classList.add('wrong');
+        clickedBtn.classList.add('wrong-choice');
+        
+        // 正解ボタンを緑色で強調表示
+        buttons.forEach(b => {
+          if (b.innerText === currentCorrectAnswer) {
+            b.classList.add('correct-choice');
+          }
+        });
+
+        msg.innerText = `❌ 不正解... 正解: ${currentCorrectAnswer}`;
+        msg.classList.add('wrong');
+        wrongWordIds.add(item.id);
+      }
+
+      document.getElementById('next-btn').style.display = 'block';
+    }
+
+    // 入力式の回答判定
+    function checkTextAnswer() {
       const input = document.getElementById('answer-input');
       const userAns = input.value.trim();
       if (!userAns) return;
@@ -777,7 +896,6 @@
       document.getElementById('next-btn').style.display = 'block';
     }
 
-    // 次の問題へ
     function nextQuestion() {
       currentQuestionIndex++;
       if (currentQuestionIndex < currentQuestions.length) {
@@ -788,7 +906,6 @@
       }
     }
 
-    // テスト中断
     function quitTest() {
       if (confirm('テストを終了しますか？')) {
         showPage('study');
