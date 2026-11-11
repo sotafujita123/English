@@ -55,8 +55,8 @@ def process_image_with_ocr(image_bytes, api_key):
     
     try:
         genai.configure(api_key=api_key)
-        # モデル名を最新の gemini-2.5-flash に更新
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        # モデル名を最新の gemini-2.0-flash に更新
+        model = genai.GenerativeModel('gemini-2.0-flash')
         image = Image.open(io.BytesIO(image_bytes))
         
         prompt = """
