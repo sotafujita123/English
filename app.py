@@ -5,13 +5,7 @@ import random
 import base64
 from PIL import Image
 import io
-
-# OpenAIライブラリのチェック
-try:
-    from openai import OpenAI
-    HAS_OPENAI = True
-except ImportError:
-    HAS_OPENAI = False
+import google.generativeai as genai
 
 st.set_page_config(page_title="英単語帳スキャンアプリ", layout="wide")
 
@@ -32,7 +26,7 @@ def convert_to_jpeg(img_bytes):
     except Exception:
         return img_bytes
 
-# --- データ保存・読み込み処理 ---
+# --- データ保存・読み込み処理（APIキーも一緒に保存） ---
 def get_user_file_path(email):
     safe_email = email.replace("@", "_at_").replace(".", "_")
     return f"user_data_{safe_email}.json"
@@ -42,54 +36,47 @@ def load_user_data(email):
     if os.path.exists(filepath):
         with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"files": {}, "wrong_words": []}
+    return {"api_key": "", "files": {}, "wrong_words": []}
 
 def save_user_data(email):
     filepath = get_user_file_path(email)
     data = {
-        "files": st.session_state.files,
-        "wrong_words": st.session_state.wrong_words
+        "api_key": st.session_state.get("api_key", ""),
+        "files": st.session_state.get("files", {}),
+        "wrong_words": st.session_state.get("wrong_words", [])
     }
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- 画像からのOCR読み取り処理 (OpenAI Vision API) ---
+# --- 画像からのOCR読み取り処理 (Gemini API - 完全無料) ---
 def process_image_with_ocr(image_bytes, api_key):
-    if not HAS_OPENAI or not api_key:
+    if not api_key:
         return None
     
-    client = OpenAI(api_key=api_key)
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
-    
-    prompt = """
-    この画像は英単語帳のページです。画像に含まれるすべての英単語、その日本語訳、および例文を抽出し、以下のJSON形式のみで出力してください。他の文章は含めないでください。
-    [
-      {
-        "word": "英単語",
-        "meaning": "日本語訳",
-        "example": "英文の例文（単語を含む）"
-      }
-    ]
-    """
-    
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        }
-                    ]
-                }
-            ],
-            response_format={"type": "json_object"}
-        )
-        res_text = response.choices[0].message.content
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        prompt = """
+        この画像は英単語帳のページです。画像に含まれるすべての英単語、その日本語訳、および例文を抽出し、以下のJSON配列形式のみで出力してください。他の説明文やMarkdownの装飾は一切含めないでください。
+        [
+          {
+            "word": "英単語",
+            "meaning": "日本語訳",
+            "example": "英文の例文（単語を含む）"
+          }
+        ]
+        """
+        
+        response = model.generate_content([prompt, image])
+        res_text = response.text.strip()
+        
+        if "```json" in res_text:
+            res_text = res_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in res_text:
+            res_text = res_text.split("```")[1].split("```")[0].strip()
+            
         data = json.loads(res_text)
         if isinstance(data, dict):
             for val in data.values():
@@ -97,7 +84,7 @@ def process_image_with_ocr(image_bytes, api_key):
                     return val
         return data
     except Exception as e:
-        st.error(f"OCR解析エラー: {e}")
+        st.error(f"Gemini OCR解析エラー: {e}")
         return None
 
 # --- セッション状態の初期化 ---
@@ -113,15 +100,31 @@ if not st.session_state.user_email:
     st.title("🔑 英単語学習アプリ - ログイン")
     
     email_input = st.text_input("メールアドレスを入力してください")
-    api_key_input = st.text_input("OpenAI API Key（画像スキャン用・任意）", type="password")
+    
+    saved_key = ""
+    if email_input:
+        existing_data = load_user_data(email_input)
+        saved_key = existing_data.get("api_key", "")
+    
+    if saved_key:
+        st.success("✅ 保存済みのAPIキーを検出しました。そのままログインできます。")
+        api_key_input = st.text_input("API Key（変更する場合のみ入力）", value=saved_key, type="password")
+    else:
+        api_key_input = st.text_input("Gemini API Key（初回のみ入力・自動保存されます）", type="password")
     
     if st.button("ログイン", type="primary"):
         if email_input:
             st.session_state.user_email = email_input
-            st.session_state.api_key = api_key_input
             loaded_data = load_user_data(email_input)
+            
+            final_key = api_key_input.strip() if api_key_input.strip() else loaded_data.get("api_key", "")
+            
+            st.session_state.api_key = final_key
             st.session_state.files = loaded_data.get("files", {})
             st.session_state.wrong_words = loaded_data.get("wrong_words", [])
+            
+            # APIキーも含めて保存
+            save_user_data(email_input)
             st.rerun()
         else:
             st.warning("メールアドレスを入力してください。")
@@ -156,10 +159,9 @@ if page == "学習":
                 all_parsed_words = []
                 b64_images = []
                 
-                with st.spinner(f"選択された{len(uploaded_files)}枚の画像を解析中..."):
+                with st.spinner(f"Gemini AIが{len(uploaded_files)}枚の画像を無料解析中..."):
                     for uploaded_file in uploaded_files:
                         raw_bytes = uploaded_file.read()
-                        # 画像を標準のJPEGに変換して保存
                         jpeg_bytes = convert_to_jpeg(raw_bytes)
                         b64_img = base64.b64encode(jpeg_bytes).decode('utf-8')
                         b64_images.append(b64_img)
@@ -180,7 +182,7 @@ if page == "学習":
                     "words": all_parsed_words
                 }
                 save_user_data(st.session_state.user_email)
-                st.success(f"フォルダ「{file_name}」を作成し、{len(uploaded_files)} 枚の写真を保存しました！")
+                st.success(f"フォルダ「{file_name}」を作成し、{len(uploaded_files)} 枚の写真を解析・保存しました！")
                 st.rerun()
             else:
                 st.warning("写真（1枚以上）とフォルダ名の両方を指定してください。")
