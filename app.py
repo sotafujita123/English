@@ -26,7 +26,7 @@ def convert_to_jpeg(img_bytes):
     except Exception:
         return img_bytes
 
-# --- データ保存・読み込み処理（APIキーも一緒に保存） ---
+# --- データ保存・読み込み処理 ---
 def get_user_file_path(email):
     safe_email = email.replace("@", "_at_").replace(".", "_")
     return f"user_data_{safe_email}.json"
@@ -48,15 +48,34 @@ def save_user_data(email):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- 画像からのOCR読み取り処理 (Gemini API) ---
+# --- 画像からのOCR読み取り処理 (利用可能なモデルを自動取得) ---
 def process_image_with_ocr(image_bytes, api_key):
     if not api_key:
         return None
     
     try:
         genai.configure(api_key=api_key)
-        # モデル名を最新の gemini-2.0-flash に更新
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        # 利用可能なモデル一覧を自動取得
+        available_models = [
+            m.name for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        # flashモデルを優先的に探して自動選択
+        target_model = None
+        for m_name in available_models:
+            if 'flash' in m_name.lower():
+                target_model = m_name
+                break
+        
+        if not target_model and available_models:
+            target_model = available_models[0]
+            
+        if not target_model:
+            target_model = 'gemini-1.5-flash'
+            
+        model = genai.GenerativeModel(target_model)
         image = Image.open(io.BytesIO(image_bytes))
         
         prompt = """
@@ -124,14 +143,13 @@ if not st.session_state.user_email:
             st.session_state.files = loaded_data.get("files", {})
             st.session_state.wrong_words = loaded_data.get("wrong_words", [])
             
-            # APIキーも含めて保存
             save_user_data(email_input)
             st.rerun()
         else:
             st.warning("メールアドレスを入力してください。")
     st.stop()
 
-# --- ログイン後のメイン画面 ---
+# --- 2. メイン画面 ---
 st.sidebar.title("メニュー")
 st.sidebar.write(f"👤 **{st.session_state.user_email}**")
 if st.sidebar.button("ログアウト"):
@@ -146,7 +164,6 @@ page = st.sidebar.radio("ページ移動", ["学習", "テスト", "間違えた
 if page == "学習":
     st.title("📖 単語学習")
     
-    # 複数画像スキャン・フォルダ作成機能
     with st.expander("📷 新しいフォルダを作成（画像から単語登録）"):
         uploaded_files = st.file_uploader(
             "ファイルを選択を押して、写真を選んでください（複数枚選択可）", 
@@ -172,7 +189,7 @@ if page == "学習":
                             all_parsed_words.extend(parsed)
                 
                 if not all_parsed_words:
-                    st.warning("OCR解析が利用できないため、サンプル単語を作成しました。（API Keyを設定すると画像から抽出されます）")
+                    st.warning("OCR解析に失敗したため、サンプル単語を作成しました。")
                     all_parsed_words = [
                         {"word": "example", "meaning": "例", "example": "This is an example sentence."},
                         {"word": "study", "meaning": "勉強する", "example": "I study English every day."}
@@ -188,7 +205,6 @@ if page == "学習":
             else:
                 st.warning("写真（1枚以上）とフォルダ名の両方を指定してください。")
 
-    # フォルダ削除機能
     file_list = list(st.session_state.files.keys())
     if file_list:
         with st.expander("🗑️ フォルダの削除・整理"):
@@ -199,7 +215,6 @@ if page == "学習":
                 st.success(f"フォルダ「{target_del}」を削除しました。")
                 st.rerun()
 
-    # 学習範囲の選択
     st.write("---")
     
     if not file_list:
@@ -207,7 +222,6 @@ if page == "学習":
     else:
         selected_files = st.multiselect("学習するフォルダを選択（複数可）", file_list, default=file_list)
         
-        # 写真の表示・ダウンロードエリア
         with st.expander("📥 選択したフォルダの写真を表示・ダウンロード"):
             for f_name in selected_files:
                 f_data = st.session_state.files[f_name]
