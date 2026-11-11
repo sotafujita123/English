@@ -48,14 +48,15 @@ def save_user_data(email):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- 画像からのOCR読み取り処理 (Gemini API - 完全無料) ---
+# --- 画像からのOCR読み取り処理 (Gemini API) ---
 def process_image_with_ocr(image_bytes, api_key):
     if not api_key:
         return None
     
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # モデル名を最新の gemini-2.5-flash に更新
+        model = genai.GenerativeModel('gemini-2.5-flash')
         image = Image.open(io.BytesIO(image_bytes))
         
         prompt = """
