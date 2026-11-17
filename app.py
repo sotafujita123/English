@@ -3,13 +3,22 @@ import json
 import os
 import random
 import base64
+import time
 from PIL import Image
 import io
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 st.set_page_config(page_title="英単語帳スキャンアプリ", layout="wide")
 
-# --- 画像を安全にJPEG形式に変換する関数 ---
+# --- Secrets（裏設定）からAPIキーを取得する関数 ---
+def get_secret_api_key():
+    try:
+        return st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        return ""
+
+# --- 画像を軽量化してJPEG形式に変換する関数 ---
 def convert_to_jpeg(img_bytes):
     try:
         try:
@@ -20,8 +29,10 @@ def convert_to_jpeg(img_bytes):
         
         image = Image.open(io.BytesIO(img_bytes))
         image = image.convert("RGB")
+        # 通信エラー防止のため長辺1600px以内にリサイズ（文字は十分読めます）
+        image.thumbnail((1600, 1600))
         output = io.BytesIO()
-        image.save(output, format="JPEG")
+        image.save(output, format="JPEG", quality=85)
         return output.getvalue()
     except Exception:
         return img_bytes
@@ -48,64 +59,78 @@ def save_user_data(email):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- 画像からのOCR読み取り処理 (利用可能なモデルを自動取得) ---
+# --- APIキーの接続テスト関数 ---
+def test_gemini_connection(api_key):
+    clean_key = api_key.strip()
+    if not clean_key:
+        return False, "APIキーが空です。"
+    try:
+        client = genai.Client(api_key=clean_key)
+        for model_name in ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]:
+            try:
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents="Reply with OK"
+                )
+                if res.text:
+                    return True, f"接続成功！（使用モデル: {model_name}）"
+            except Exception:
+                continue
+        return False, "APIキーは認識されましたが、利用可能なモデルが見つかりませんでした。"
+    except Exception as e:
+        return False, f"APIキーが無効または通信エラーです: {e}"
+
+# --- 画像からのOCR読み取り処理 (最新 google-genai SDK) ---
 def process_image_with_ocr(image_bytes, api_key):
-    if not api_key:
+    clean_key = api_key.strip()
+    if not clean_key:
+        st.error("APIキーが設定されていません。")
         return None
     
-    try:
-        genai.configure(api_key=api_key)
-        
-        # 利用可能なモデル一覧を自動取得
-        available_models = [
-            m.name for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        # flashモデルを優先的に探して自動選択
-        target_model = None
-        for m_name in available_models:
-            if 'flash' in m_name.lower():
-                target_model = m_name
-                break
-        
-        if not target_model and available_models:
-            target_model = available_models[0]
+    client = genai.Client(api_key=clean_key)
+    prompt = """
+    この画像は英単語帳のページです。画像に含まれるすべての英単語、その日本語訳、および例文を抽出し、以下のJSON配列形式のみで出力してください。他の説明文やMarkdownの装飾は一切含めないでください。
+    [
+      {
+        "word": "英単語",
+        "meaning": "日本語訳",
+        "example": "英文の例文（単語を含む）"
+      }
+    ]
+    """
+    
+    # 最新モデルから順に自動試行
+    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
+    last_error = None
+    
+    for model_name in candidate_models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    prompt
+                ]
+            )
+            res_text = response.text.strip()
             
-        if not target_model:
-            target_model = 'gemini-1.5-flash'
+            if "```json" in res_text:
+                res_text = res_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in res_text:
+                res_text = res_text.split("```")[1].split("```")[0].strip()
+                
+            data = json.loads(res_text)
+            if isinstance(data, dict):
+                for val in data.values():
+                    if isinstance(val, list):
+                        return val
+            return data
+        except Exception as e:
+            last_error = e
+            continue
             
-        model = genai.GenerativeModel(target_model)
-        image = Image.open(io.BytesIO(image_bytes))
-        
-        prompt = """
-        この画像は英単語帳のページです。画像に含まれるすべての英単語、その日本語訳、および例文を抽出し、以下のJSON配列形式のみで出力してください。他の説明文やMarkdownの装飾は一切含めないでください。
-        [
-          {
-            "word": "英単語",
-            "meaning": "日本語訳",
-            "example": "英文の例文（単語を含む）"
-          }
-        ]
-        """
-        
-        response = model.generate_content([prompt, image])
-        res_text = response.text.strip()
-        
-        if "```json" in res_text:
-            res_text = res_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in res_text:
-            res_text = res_text.split("```")[1].split("```")[0].strip()
-            
-        data = json.loads(res_text)
-        if isinstance(data, dict):
-            for val in data.values():
-                if isinstance(val, list):
-                    return val
-        return data
-    except Exception as e:
-        st.error(f"Gemini OCR解析エラー: {e}")
-        return None
+    st.error(f"Gemini OCR解析エラー: {last_error}")
+    return None
 
 # --- セッション状態の初期化 ---
 if "user_email" not in st.session_state:
@@ -121,23 +146,36 @@ if not st.session_state.user_email:
     
     email_input = st.text_input("メールアドレスを入力してください")
     
+    secret_key = get_secret_api_key()
     saved_key = ""
     if email_input:
         existing_data = load_user_data(email_input)
         saved_key = existing_data.get("api_key", "")
     
-    if saved_key:
-        st.success("✅ 保存済みのAPIキーを検出しました。そのままログインできます。")
-        api_key_input = st.text_input("API Key（変更する場合のみ入力）", value=saved_key, type="password")
-    else:
-        api_key_input = st.text_input("Gemini API Key（初回のみ入力・自動保存されます）", type="password")
+    default_key = secret_key or saved_key
     
-    if st.button("ログイン", type="primary"):
+    if default_key:
+        st.success("✅ APIキーを自動検出しました。そのままログインできます。")
+        api_key_input = st.text_input("Gemini API Key（変更する場合のみ入力）", value=default_key, type="password")
+    else:
+        api_key_input = st.text_input("Gemini API Key（AIzaSy... で始まるキー）", type="password")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        login_clicked = st.button("ログイン", type="primary", use_container_width=True)
+    with col2:
+        if st.button("🔍 入力したAPIキーが使えるかテストする"):
+            ok, msg = test_gemini_connection(api_key_input)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+                
+    if login_clicked:
         if email_input:
             st.session_state.user_email = email_input
             loaded_data = load_user_data(email_input)
-            
-            final_key = api_key_input.strip() if api_key_input.strip() else loaded_data.get("api_key", "")
+            final_key = api_key_input.strip() if api_key_input.strip() else default_key
             
             st.session_state.api_key = final_key
             st.session_state.files = loaded_data.get("files", {})
@@ -164,21 +202,22 @@ page = st.sidebar.radio("ページ移動", ["学習", "テスト", "間違えた
 if page == "学習":
     st.title("📖 単語学習")
     
-    with st.expander("📷 新しいフォルダを作成（画像から単語登録）"):
+    with st.expander("📷 新しいフォルダを作成（画像から単語登録）", expanded=True):
         uploaded_files = st.file_uploader(
-            "ファイルを選択を押して、写真を選んでください（複数枚選択可）", 
+            "写真を選んでください（最初は1枚ずつ試すのがおすすめです）", 
             type=["png", "jpg", "jpeg", "heic"], 
             accept_multiple_files=True
         )
         file_name = st.text_input("作成するフォルダ名を入力（例: Chapter1_名詞）")
         
-        if st.button("スキャンしてフォルダに保存"):
+        if st.button("スキャンしてフォルダに保存", type="primary"):
             if uploaded_files and file_name:
                 all_parsed_words = []
                 b64_images = []
                 
-                with st.spinner(f"Gemini AIが{len(uploaded_files)}枚の画像を無料解析中..."):
-                    for uploaded_file in uploaded_files:
+                progress_bar = st.progress(0)
+                with st.spinner(f"Gemini AIが{len(uploaded_files)}枚の画像を解析中..."):
+                    for i, uploaded_file in enumerate(uploaded_files):
                         raw_bytes = uploaded_file.read()
                         jpeg_bytes = convert_to_jpeg(raw_bytes)
                         b64_img = base64.b64encode(jpeg_bytes).decode('utf-8')
@@ -187,21 +226,23 @@ if page == "学習":
                         parsed = process_image_with_ocr(jpeg_bytes, st.session_state.api_key)
                         if parsed:
                             all_parsed_words.extend(parsed)
+                        
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                        # 連続アクセス制限を防ぐため少し待機
+                        if i < len(uploaded_files) - 1:
+                            time.sleep(1.5)
                 
                 if not all_parsed_words:
-                    st.warning("OCR解析に失敗したため、サンプル単語を作成しました。")
-                    all_parsed_words = [
-                        {"word": "example", "meaning": "例", "example": "This is an example sentence."},
-                        {"word": "study", "meaning": "勉強する", "example": "I study English every day."}
-                    ]
-                
-                st.session_state.files[file_name] = {
-                    "images": b64_images,
-                    "words": all_parsed_words
-                }
-                save_user_data(st.session_state.user_email)
-                st.success(f"フォルダ「{file_name}」を作成し、{len(uploaded_files)} 枚の写真を解析・保存しました！")
-                st.rerun()
+                    st.error("単語を読み取れませんでした。上のエラー内容またはAPIキーを確認してください。")
+                else:
+                    st.session_state.files[file_name] = {
+                        "images": b64_images,
+                        "words": all_parsed_words
+                    }
+                    save_user_data(st.session_state.user_email)
+                    st.success(f"フォルダ「{file_name}」を作成し、{len(all_parsed_words)}個の単語を登録しました！")
+                    time.sleep(1)
+                    st.rerun()
             else:
                 st.warning("写真（1枚以上）とフォルダ名の両方を指定してください。")
 
@@ -209,7 +250,7 @@ if page == "学習":
     if file_list:
         with st.expander("🗑️ フォルダの削除・整理"):
             target_del = st.selectbox("削除したいフォルダを選択", file_list)
-            if st.button(f"「{target_del}」を削除する", type="primary"):
+            if st.button(f"「{target_del}」を削除する"):
                 del st.session_state.files[target_del]
                 save_user_data(st.session_state.user_email)
                 st.success(f"フォルダ「{target_del}」を削除しました。")
@@ -228,18 +269,11 @@ if page == "学習":
                 st.write(f"📁 **フォルダ名: {f_name}**")
                 
                 images = f_data.get("images", [])
-                if not images and "image" in f_data:
-                    images = [f_data["image"]]
-                
                 cols = st.columns(min(len(images), 3) if images else 1)
                 for idx, b64_img in enumerate(images):
                     img_data = base64.b64decode(b64_img)
                     with cols[idx % 3]:
-                        try:
-                            st.image(img_data, caption=f"ページ {idx + 1}", use_container_width=True)
-                        except Exception:
-                            st.caption(f"ページ {idx + 1} (画像表示非対応)")
-                        
+                        st.image(img_data, caption=f"ページ {idx + 1}", use_container_width=True)
                         st.download_button(
                             label=f"ページ {idx + 1} をダウンロード",
                             data=img_data,
@@ -255,18 +289,22 @@ if page == "学習":
                 all_cards.append(item)
                 
         for idx, item in enumerate(all_cards):
-            card_key = f"card_state_{idx}_{item['word']}"
+            word_txt = item.get("word", "")
+            meaning_txt = item.get("meaning", "")
+            example_txt = item.get("example", "")
+            
+            card_key = f"card_state_{idx}_{word_txt}"
             if card_key not in st.session_state:
                 st.session_state[card_key] = False
             
             if not st.session_state[card_key]:
-                if st.button(f"🇬🇧  {item['word']}  (タップで裏返す)", key=f"btn_{card_key}", use_container_width=True):
+                if st.button(f"🇬🇧  {word_txt}  (タップで裏返す)", key=f"btn_{card_key}", use_container_width=True):
                     st.session_state[card_key] = True
                     st.rerun()
             else:
                 with st.container():
-                    st.markdown(f"### 🇯🇵 **{item['meaning']}**")
-                    st.write(f"📝 **例文:** {item.get('example', '')}")
+                    st.markdown(f"### 🇯🇵 **{meaning_txt}**")
+                    st.write(f"📝 **例文:** {example_txt}")
                     if st.button("↩️ 表に戻す", key=f"btn_back_{card_key}"):
                         st.session_state[card_key] = False
                         st.rerun()
@@ -292,7 +330,7 @@ elif page == "テスト":
             questions = []
             for f_name in selected_files:
                 for item in st.session_state.files[f_name].get("words", []):
-                    if item.get("example") and item["word"].lower() in item.get("example", "").lower():
+                    if item.get("example") and item.get("word", "").lower() in item.get("example", "").lower():
                         questions.append(item)
             
             if not questions:
@@ -417,18 +455,22 @@ elif page == "間違えた問題":
             
         st.write("---")
         for idx, item in enumerate(st.session_state.wrong_words):
-            card_key = f"wrong_card_{idx}_{item['word']}"
+            word_txt = item.get("word", "")
+            meaning_txt = item.get("meaning", "")
+            example_txt = item.get("example", "")
+            
+            card_key = f"wrong_card_{idx}_{word_txt}"
             if card_key not in st.session_state:
                 st.session_state[card_key] = False
                 
             if not st.session_state[card_key]:
-                if st.button(f"🇬🇧 {item['word']} (タップで裏返す)", key=f"btn_{card_key}", use_container_width=True):
+                if st.button(f"🇬🇧 {word_txt} (タップで裏返す)", key=f"btn_{card_key}", use_container_width=True):
                     st.session_state[card_key] = True
                     st.rerun()
             else:
                 with st.container():
-                    st.markdown(f"### 🇯🇵 **{item['meaning']}**")
-                    st.write(f"📝 **例文:** {item.get('example', '')}")
+                    st.markdown(f"### 🇯🇵 **{meaning_txt}**")
+                    st.write(f"📝 **例文:** {example_txt}")
                     if st.button("↩️ 表に戻す", key=f"btn_back_{card_key}"):
                         st.session_state[card_key] = False
                         st.rerun()
