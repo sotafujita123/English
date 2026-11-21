@@ -43,9 +43,9 @@ st.markdown("""
 def compress_image_for_ai(img_bytes):
     try:
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        image.thumbnail((1200, 1200))
+        image.thumbnail((1200, 1200)) # 大幅縮小で高速化
         output = io.BytesIO()
-        image.save(output, format="JPEG", quality=70)
+        image.save(output, format="JPEG", quality=70) # 画質圧縮
         return output.getvalue()
     except Exception:
         return img_bytes
@@ -69,11 +69,12 @@ def save_user_data(email):
 # --- 画像からのOCR読み取り・例文生成処理 ---
 def process_image_with_ocr(image_bytes, api_key):
     client = genai.Client(api_key=api_key.strip())
+    # 例文がない場合はAIに作らせるプロンプト
     prompt = """
     この画像は英単語帳のページです。画像に含まれるすべての英単語と日本語訳を抽出し、以下のルールでJSON配列として出力してください。
-1. 画像内に例文がある場合は、その例文を抽出して "example" に入れてください。
-2. 画像内に例文がない場合は、その英単語を使った自然な例文を新しく作成して "example" に入れてください。
-3. 例文内の英単語部分は [ ______ ] のように穴埋め形式にしてください。
+    1. 画像内に例文がある場合は、その例文を抽出して "example" に入れてください。
+    2. 画像内に例文がない場合は、その英単語を使った自然な例文を新しく作成して "example" に入れてください。
+    3. 例文内の英単語部分は [ ______ ] のように穴埋め形式にしてください。
     出力形式: [{"word": "英単語", "meaning": "日本語訳", "example": "例文"}]
     他の説明文やMarkdownの装飾は一切含めないでください。
     """
@@ -103,7 +104,7 @@ if "api_key" not in st.session_state: st.session_state.api_key = ""
 if "test_state" not in st.session_state: st.session_state.test_state = None
 if "selected_folders" not in st.session_state: st.session_state.selected_folders = None
 
-# --- 1. ログイン画面 ---
+# --- 1. ログイン画面（パスワードマネージャー連携） ---
 if not st.session_state.user_email:
     st.title("📘 英単語マスター - ログイン")
     st.write("ブラウザのパスワード保存機能（Face IDや指紋認証）が使えます。")
@@ -126,7 +127,7 @@ if not st.session_state.user_email:
                 st.warning("両方入力してください。")
     st.stop()
 
-# --- 2. サイドバーナビゲーション ---
+# --- 2. サイドバーナビゲーション（ボタン型メニュー） ---
 with st.sidebar:
     st.caption(f"👤 {st.session_state.user_email}")
     page = option_menu(
@@ -142,12 +143,12 @@ with st.sidebar:
         st.rerun()
 
 # ---------------------------------------------------------
-# ページ1: 学習カード
+# ページ1: 学習カード（即座に裏返るHTML実装）
 # ---------------------------------------------------------
 if page == "📖 学習カード":
     file_list = list(st.session_state.files.keys())
     
-    with st.expander("📷 写真から単語を追加", expanded=(len(file_list) == 0)):
+    with st.expander("📷 写真から単語を追加（複数枚の高速同時スキャン対応）", expanded=(len(file_list) == 0)):
         uploaded_files = st.file_uploader("単語帳の写真", type=["png", "jpg", "jpeg", "heic"], accept_multiple_files=True)
         file_name = st.text_input("保存するフォルダ名")
         
@@ -156,6 +157,7 @@ if page == "📖 学習カード":
                 all_parsed_words = []
                 b64_images = []
                 with st.spinner("AIが複数画像を同時解析中..."):
+                    # 複数枚の画像を同時にAIへ投げて高速化
                     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                         futures = [executor.submit(process_single_image_task, f.read(), st.session_state.api_key) for f in uploaded_files]
                         for future in concurrent.futures.as_completed(futures):
@@ -166,29 +168,16 @@ if page == "📖 学習カード":
                 if all_parsed_words:
                     st.session_state.files[file_name] = {"images": b64_images, "words": all_parsed_words}
                     save_user_data(st.session_state.user_email)
-                    st.success(f"{len(all_parsed_words)}単語を登録しました！")
+                    st.success(f"{len(all_parsed_words)}単語を登録しました！例文がない場合はAIが自動生成しました。")
                     time.sleep(1.5)
                     st.rerun()
             else:
                 st.warning("写真とフォルダ名の両方を指定してください。")
 
-    # フォルダ削除機能
-    if file_list:
-        with st.expander("🗑️ フォルダを完全に削除"):
-            del_folder = st.selectbox("削除するフォルダを選択", file_list)
-            if st.button("このフォルダを削除", type="primary"):
-                del st.session_state.files[del_folder]
-                if st.session_state.selected_folders and del_folder in st.session_state.selected_folders:
-                    st.session_state.selected_folders.remove(del_folder)
-                save_user_data(st.session_state.user_email)
-                st.success(f"「{del_folder}」を削除しました。")
-                time.sleep(1)
-                st.rerun()
-
-    file_list = list(st.session_state.files.keys())
     if not file_list:
         st.stop()
 
+    # フォルダ選択の記憶処理
     if st.session_state.selected_folders is None:
         default_files = file_list
     else:
@@ -205,22 +194,24 @@ if page == "📖 学習カード":
     st.markdown(f'<div class="header-box"><div class="header-title">📖 学習カード</div><div class="count-badge">全 {len(all_cards)} 単語</div></div>', unsafe_allow_html=True)
     st.caption("💡 カードをタップすると一瞬で裏返ります。")
 
-    # サクサク動くHTMLカードの生成（空白を消して左詰めに修正）
-    cards_html = '<div class="flip-container">\n'
+    # サクサク動くHTMLカードの生成
+    cards_html = '<div class="flip-container">'
     for item in all_cards:
         w = item.get("word", "")
         m = item.get("meaning", "")
         e = item.get("example", "")
-        cards_html += f"""<div class="flip-card">
-<div class="flip-card-inner" onclick="this.style.transform = this.style.transform === 'rotateY(180deg)' ? 'rotateY(0deg)' : 'rotateY(180deg)'">
-<div class="flip-card-front">🇬🇧 {w}</div>
-<div class="flip-card-back">
-<div style="font-size:0.9rem; color:#64748b; font-weight:bold;">🇬🇧 {w}</div>
-<div style="font-size:1.3rem; font-weight:800; color:#0f172a; margin:4px 0;">🇯🇵 {m}</div>
-<div style="font-size:0.9rem; color:#475569; background:#f1f5f9; padding:8px; border-radius:6px; margin-top:8px;">📝 {e}</div>
-</div>
-</div>
-</div>\n"""
+        cards_html += f"""
+        <div class="flip-card">
+          <div class="flip-card-inner" onclick="this.style.transform = this.style.transform === 'rotateY(180deg)' ? 'rotateY(0deg)' : 'rotateY(180deg)'">
+            <div class="flip-card-front">🇬🇧 {w}</div>
+            <div class="flip-card-back">
+               <div style="font-size:0.9rem; color:#64748b; font-weight:bold;">🇬🇧 {w}</div>
+               <div style="font-size:1.3rem; font-weight:800; color:#0f172a; margin:4px 0;">🇯🇵 {m}</div>
+               <div style="font-size:0.9rem; color:#475569; background:#f1f5f9; padding:8px; border-radius:6px; margin-top:8px;">📝 {e}</div>
+            </div>
+          </div>
+        </div>
+        """
     cards_html += '</div>'
     st.markdown(cards_html, unsafe_allow_html=True)
 
@@ -234,6 +225,7 @@ elif page == "✍️ 単語テスト":
     if st.session_state.test_state is None:
         st.markdown('<div class="header-box"><div class="header-title">✍️ テスト設定</div></div>', unsafe_allow_html=True)
         
+        # フォルダ選択の記憶処理
         if st.session_state.selected_folders is None:
             default_files = file_list
         else:
@@ -270,6 +262,7 @@ elif page == "✍️ 単語テスト":
         st.progress(ts["idx"] / len(ts["questions"]))
         st.markdown(f"**第 {ts['idx'] + 1} 問** (正解: {ts['score']})")
 
+        # 問題表示
         if is_en_to_ja:
             st.markdown(f'<div class="quiz-card"><div class="quiz-question-text">{q["word"]}</div></div>', unsafe_allow_html=True)
         else:
