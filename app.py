@@ -15,7 +15,7 @@ from streamlit_option_menu import option_menu
 # ページ全体の初期設定
 st.set_page_config(page_title="英単語マスター", page_icon="📘", layout="wide")
 
-# --- カスタムCSS ---
+# --- カスタムCSS（HTMLカードのアニメーション含む） ---
 st.markdown("""
 <style>
     .stApp { background-color: #f8fafc; color: #1e293b; }
@@ -23,6 +23,7 @@ st.markdown("""
     .header-title { font-size: 1.5rem; font-weight: 700; color: #0f172a; margin: 0; }
     .count-badge { background: #eef2ff; color: #4f46e5; font-weight: 700; padding: 0.35rem 0.9rem; border-radius: 999px; font-size: 0.95rem; border: 1px solid #c7d2fe; }
     
+    /* サクサク裏返るHTMLカード用CSS */
     .flip-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-top: 10px; }
     .flip-card { background-color: transparent; height: 180px; perspective: 1000px; cursor: pointer; }
     .flip-card-inner { position: relative; width: 100%; height: 100%; text-align: center; transition: transform 0.4s ease-in-out; transform-style: preserve-3d; }
@@ -30,9 +31,11 @@ st.markdown("""
     .flip-card-front { background-color: #ffffff; color: #0f172a; font-size: 1.6rem; font-weight: 700; border: 2px solid #e2e8f0; align-items: center; }
     .flip-card-back { background-color: #ffffff; color: #1e293b; transform: rotateY(180deg); border: 2px solid #6366f1; align-items: flex-start; text-align: left; }
     
+    /* テスト用UI */
     .quiz-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.8rem; box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05); margin: 1rem 0 1.2rem 0; }
-    .quiz-hint-text { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px dashed #cbd5e1; color: #475569; font-size: 1rem; }
+    .quiz-badge { display: inline-block; background: #e0e7ff; color: #4338ca; font-size: 0.8rem; font-weight: 700; padding: 0.25rem 0.7rem; border-radius: 6px; margin-bottom: 0.8rem; }
     .quiz-question-text { font-size: 1.35rem; font-weight: 700; color: #0f172a; line-height: 1.6; }
+    .quiz-hint-text { margin-top: 0.9rem; padding-top: 0.8rem; border-top: 1px dashed #cbd5e1; color: #475569; font-size: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,7 +43,7 @@ st.markdown("""
 def compress_image_for_ai(img_bytes):
     try:
         image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        image.thumbnail((1200, 1200)) # 画像サイズを縮小してAPI制限を回避
+        image.thumbnail((1200, 1200))
         output = io.BytesIO()
         image.save(output, format="JPEG", quality=70)
         return output.getvalue()
@@ -63,7 +66,7 @@ def save_user_data(email):
     with open(get_user_file_path(email), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- OCR処理 ---
+# --- 画像からのOCR読み取り・例文生成処理 ---
 def process_image_with_ocr(image_bytes, api_key):
     client = genai.Client(api_key=api_key.strip())
     prompt = """
@@ -75,25 +78,24 @@ def process_image_with_ocr(image_bytes, api_key):
     他の説明文やMarkdownの装飾は一切含めないでください。
     """
     try:
-        # ここを正しいモデル名に修正しました
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt]
         )
         res_text = response.text.strip()
         if "```json" in res_text: res_text = res_text.split("```json")[1].split("```")[0].strip()
         elif "```" in res_text: res_text = res_text.split("```")[1].split("```")[0].strip()
         data = json.loads(res_text)
-        result_list = list(data.values())[0] if isinstance(data, dict) else data
-        return result_list, None
+        return list(data.values())[0] if isinstance(data, dict) else data
     except Exception as e:
-        return None, str(e)
+        return None
 
+# --- 並列処理タスク ---
 def process_single_image_task(img_bytes, api_key):
     jpeg_bytes = compress_image_for_ai(img_bytes)
     b64 = base64.b64encode(jpeg_bytes).decode('utf-8')
-    parsed, error = process_image_with_ocr(jpeg_bytes, api_key)
-    return b64, parsed, error
+    parsed = process_image_with_ocr(jpeg_bytes, api_key)
+    return b64, parsed
 
 # --- セッション状態の初期化 ---
 if "user_email" not in st.session_state: st.session_state.user_email = None
@@ -124,7 +126,7 @@ if not st.session_state.user_email:
                 st.warning("両方入力してください。")
     st.stop()
 
-# --- 2. サイドバー ---
+# --- 2. サイドバーナビゲーション ---
 with st.sidebar:
     st.caption(f"👤 {st.session_state.user_email}")
     page = option_menu(
@@ -153,16 +155,13 @@ if page == "📖 学習カード":
             if uploaded_files and file_name:
                 all_parsed_words = []
                 b64_images = []
-                error_messages = []
-                
-                with st.spinner("AIが画像を解析中...（数十秒かかる場合があります）"):
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                        futures = [executor.submit(process_single_image_task, f.getvalue(), st.session_state.api_key) for f in uploaded_files]
+                with st.spinner("AIが複数画像を同時解析中..."):
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = [executor.submit(process_single_image_task, f.read(), st.session_state.api_key) for f in uploaded_files]
                         for future in concurrent.futures.as_completed(futures):
-                            b64_img, parsed, err = future.result()
+                            b64_img, parsed = future.result()
                             if b64_img: b64_images.append(b64_img)
                             if parsed: all_parsed_words.extend(parsed)
-                            if err: error_messages.append(err)
                 
                 if all_parsed_words:
                     st.session_state.files[file_name] = {"images": b64_images, "words": all_parsed_words}
@@ -170,15 +169,10 @@ if page == "📖 学習カード":
                     st.success(f"{len(all_parsed_words)}単語を登録しました！")
                     time.sleep(1.5)
                     st.rerun()
-                else:
-                    st.error("⚠️ 画像の解析に失敗しました。")
-                    if error_messages:
-                        st.info("【AIからのエラー内容】")
-                        st.code(error_messages[0])
-                        st.write("💡 ログアウトして **正しいAPIキー** を入れ直すか、画像枚数を減らして再試行してください。")
             else:
                 st.warning("写真とフォルダ名の両方を指定してください。")
 
+    # フォルダ削除機能
     if file_list:
         with st.expander("🗑️ フォルダを完全に削除"):
             del_folder = st.selectbox("削除するフォルダを選択", file_list)
@@ -209,17 +203,15 @@ if page == "📖 学習カード":
                  if not search_query or search_query.lower() in w.get("word","").lower() or search_query in w.get("meaning","")]
 
     st.markdown(f'<div class="header-box"><div class="header-title">📖 学習カード</div><div class="count-badge">全 {len(all_cards)} 単語</div></div>', unsafe_allow_html=True)
-    
-    tab1, tab2 = st.tabs(["🃏 フラッシュカード", "📋 フォルダ中身一覧"])
-    
-    with tab1:
-        st.caption("💡 カードをタップすると一瞬で裏返ります。")
-        cards_html = '<div class="flip-container">\n'
-        for item in all_cards:
-            w = item.get("word", "")
-            m = item.get("meaning", "")
-            e = item.get("example", "")
-            cards_html += f"""<div class="flip-card">
+    st.caption("💡 カードをタップすると一瞬で裏返ります。")
+
+    # サクサク動くHTMLカードの生成（空白を消して左詰めに修正）
+    cards_html = '<div class="flip-container">\n'
+    for item in all_cards:
+        w = item.get("word", "")
+        m = item.get("meaning", "")
+        e = item.get("example", "")
+        cards_html += f"""<div class="flip-card">
 <div class="flip-card-inner" onclick="this.style.transform = this.style.transform === 'rotateY(180deg)' ? 'rotateY(0deg)' : 'rotateY(180deg)'">
 <div class="flip-card-front">🇬🇧 {w}</div>
 <div class="flip-card-back">
@@ -229,19 +221,8 @@ if page == "📖 学習カード":
 </div>
 </div>
 </div>\n"""
-        cards_html += '</div>'
-        st.markdown(cards_html, unsafe_allow_html=True)
-
-    with tab2:
-        st.caption("💡 選択中のフォルダに入っている単語のリストです。")
-        if not all_cards:
-            st.write("単語が見つかりません。")
-        else:
-            for item in all_cards:
-                with st.container(border=True):
-                    st.markdown(f"**🇬🇧 {item.get('word', '')}** ＝ 🇯🇵 {item.get('meaning', '')}")
-                    if item.get('example'):
-                        st.caption(f"📝 {item.get('example', '')}")
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # ページ2: 単語テスト
