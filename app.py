@@ -12,7 +12,6 @@ from google import genai
 from google.genai import types
 from streamlit_option_menu import option_menu
 
-# ページ全体の初期設定
 st.set_page_config(page_title="英単語マスター", page_icon="📘", layout="wide")
 
 # --- カスタムCSS（HTMLカードのアニメーション含む） ---
@@ -102,7 +101,6 @@ def process_single_image_task(img_bytes, api_key):
 if "user_email" not in st.session_state: st.session_state.user_email = None
 if "api_key" not in st.session_state: st.session_state.api_key = ""
 if "test_state" not in st.session_state: st.session_state.test_state = None
-if "selected_folders" not in st.session_state: st.session_state.selected_folders = None
 
 # --- 1. ログイン画面（パスワードマネージャー連携） ---
 if not st.session_state.user_email:
@@ -177,15 +175,7 @@ if page == "📖 学習カード":
     if not file_list:
         st.stop()
 
-    # フォルダ選択の記憶処理
-    if st.session_state.selected_folders is None:
-        default_files = file_list
-    else:
-        default_files = [f for f in st.session_state.selected_folders if f in file_list]
-
-    selected_files = st.multiselect("表示するフォルダ", file_list, default=default_files)
-    st.session_state.selected_folders = selected_files
-    
+    selected_files = st.multiselect("表示するフォルダ", file_list, default=file_list)
     search_query = st.text_input("🔍 単語・意味を検索")
     
     all_cards = [w for f in selected_files for w in st.session_state.files[f].get("words", []) 
@@ -224,16 +214,7 @@ elif page == "✍️ 単語テスト":
         
     if st.session_state.test_state is None:
         st.markdown('<div class="header-box"><div class="header-title">✍️ テスト設定</div></div>', unsafe_allow_html=True)
-        
-        # フォルダ選択の記憶処理
-        if st.session_state.selected_folders is None:
-            default_files = file_list
-        else:
-            default_files = [f for f in st.session_state.selected_folders if f in file_list]
-            
-        selected_files = st.multiselect("出題範囲", file_list, default=default_files)
-        st.session_state.selected_folders = selected_files
-
+        selected_files = st.multiselect("出題範囲", file_list, default=file_list)
         col1, col2 = st.columns(2)
         with col1:
             test_dir = st.radio("出題方向", ["日 → 英（穴埋め）", "英 → 日"])
@@ -313,6 +294,7 @@ elif page == "⚠️ 復習リスト":
             save_user_data(st.session_state.user_email)
             st.rerun()
             
+        # 復習用は「削除ボタン」が必要なためStreamlit標準のUIを使用
         cols = st.columns(2)
         for idx, item in enumerate(wrongs):
             with cols[idx % 2]:
