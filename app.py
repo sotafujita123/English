@@ -76,7 +76,7 @@ def process_image_with_ocr(image_bytes, api_key):
     """
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt]
         )
         res_text = response.text.strip()
